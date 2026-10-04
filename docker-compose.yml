@@ -1,0 +1,114 @@
+services:
+  postgres-inventario:
+    image: postgres:15
+    container_name: postgres-inventario
+    environment:
+      POSTGRES_DB: inventariodb
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_inventario_data:/var/lib/postgresql/data
+      - ./database/inventory:/docker-entrypoint-initdb.d
+    networks:
+      - backend-network
+
+  postgres-pedidos:
+    image: postgres:15
+    container_name: postgres-pedidos
+    environment:
+      POSTGRES_DB: pedidosdb
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_pedidos_data:/var/lib/postgresql/data
+      - ./database/order:/docker-entrypoint-initdb.d
+    networks:
+      - backend-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.4
+    container_name: keycloak
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    command: start-dev
+    ports:
+      - "8082:8080"
+    networks:
+      - backend-network
+
+  inventario-service:
+    build: ./inventory-microservice
+    container_name: inventario-service
+    environment:
+      SPRING_R2DBC_URL: r2dbc:postgresql://postgres-inventario:5432/inventariodb
+      SPRING_R2DBC_USERNAME: ${USERNAME}
+      SPRING_R2DBC_PASSWORD: ${PASSWORD}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: "http://keycloak:8080/realms/orders-inventory-realm"
+      SERVER_PORT: 8080
+    depends_on:
+      - postgres-inventario
+      - keycloak
+    expose:
+      - "8080"
+    networks:
+      - backend-network
+
+  pedidos-service:
+    build: ./order-microservice
+    container_name: pedidos-service
+    environment:
+      SPRING_R2DBC_URL: r2dbc:postgresql://postgres-pedidos:5432/pedidosdb
+      SPRING_R2DBC_USERNAME: ${USERNAME}
+      SPRING_R2DBC_PASSWORD: ${PASSWORD}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: "http://keycloak:8080/realms/orders-inventory-realm"
+      SERVER_PORT: 8080
+    depends_on:
+      - postgres-pedidos
+      - keycloak
+      - inventario-service
+    expose:
+      - "8080"
+    networks:
+      - backend-network
+
+  gateway:
+    build: ./api-gateway
+    container_name: gateway
+    environment:
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: "http://keycloak:8080/realms/orders-inventory-realm"
+
+      SPRING_CLOUD_GATEWAY_SERVER_WEBFLUX_ROUTES_0_ID: inventario-service
+      SPRING_CLOUD_GATEWAY_SERVER_WEBFLUX_ROUTES_0_URI: http://inventario-service:8080
+      SPRING_CLOUD_GATEWAY_SERVER_WEBFLUX_ROUTES_0_PREDICATES_0: Path=/api/v1/products/**
+
+      SPRING_CLOUD_GATEWAY_SERVER_WEBFLUX_ROUTES_1_ID: pedidos-service
+      SPRING_CLOUD_GATEWAY_SERVER_WEBFLUX_ROUTES_1_URI: http://pedidos-service:8080
+      SPRING_CLOUD_GATEWAY_SERVER_WEBFLUX_ROUTES_1_PREDICATES_0: Path=/api/v1/orders/**
+    depends_on:
+      - inventario-service
+      - pedidos-service
+      - keycloak
+    ports:
+      - "9091:9090"
+    networks:
+      - backend-network
+
+  token-helper:
+    image: curlimages/curl:8.10.1
+    container_name: token-helper
+    volumes:
+      - ./scripts/get-token.sh:/get-token.sh
+    entrypoint: ["sh", "/get-token.sh"]
+    networks:
+      - backend-network
+    profiles:
+      - tools
+
+networks:
+  backend-network:
+    driver: bridge
+
+volumes:
+  postgres_inventario_data:
+  postgres_pedidos_data:
